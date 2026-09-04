@@ -1,0 +1,9 @@
+{
+  "name": "usadao-maquinas-backend-v1",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Primeira versão do back-end do Usadão Máquinas",
+  "main": "server.js",
+  "scripts": {"start": "node server.js", "dev": "node server.js"},
+  "dependencies": {"express": "^5.1.0"}
+}
