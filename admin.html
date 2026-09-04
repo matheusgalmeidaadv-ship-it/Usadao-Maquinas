@@ -40,4 +40,3 @@ window.status=async(id,s)=>{const r=await fetch('/api/equipamentos/'+id+'/status
 window.del=async id=>{if(!confirm('Excluir este equipamento?'))return;const r=await fetch('/api/equipamentos/'+id,{method:'DELETE'});if(r.ok){show('Equipamento excluído.',true);load()}else show('Não foi possível excluir')};
 $('clear').onclick=reset;$('refresh').onclick=load;$('search').oninput=render;$('filter').onchange=render;load();
 </script></body></html>
-,3
