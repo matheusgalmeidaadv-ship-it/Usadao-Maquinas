@@ -6,7 +6,7 @@ const crypto = require("crypto");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const db = new DatabaseSync(path.join(__dirname, "usadao.db"));
+const db = new DatabaseSync(process.env.DB_PATH || path.join(__dirname, "usadao.db"));
 
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: true }));
