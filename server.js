@@ -32,6 +32,23 @@ CREATE TABLE IF NOT EXISTS equipamentos (
 );
 `);
 
+// Estrutura dos lances: guarda os dados necessários para registrar a disputa do lote.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS lances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    equipamento_id INTEGER NOT NULL,
+    nome TEXT NOT NULL,
+    cpf_hash TEXT NOT NULL,
+    cpf_final4 TEXT NOT NULL,
+    telefone TEXT NOT NULL,
+    email TEXT NOT NULL,
+    valor REAL NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (equipamento_id) REFERENCES equipamentos(id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_lances_equipamento_valor ON lances(equipamento_id, valor DESC);
+`);
+
 // Migração segura: adiciona somente colunas novas, sem apagar ou substituir dados existentes.
 const colunas = db.prepare("PRAGMA table_info(equipamentos)").all().map(x => x.name);
 const novasColunas = {
@@ -197,6 +214,135 @@ app.patch("/api/equipamentos/:id/status", (req, res) => {
   const result = db.prepare("UPDATE equipamentos SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(status, id);
   if (!result.changes) return res.status(404).json({ erro: "Equipamento não encontrado." });
   res.json(db.prepare("SELECT * FROM equipamentos WHERE id = ?").get(id));
+});
+
+
+// Retorna apenas informações públicas do lance atual, sem expor dados pessoais dos participantes.
+app.get("/api/equipamentos/:id/lances", (req, res) => {
+  const equipamentoId = Number(req.params.id);
+  const equipamento = db.prepare("SELECT id, status, lance_inicial, incremento, data_abertura, data_encerramento FROM equipamentos WHERE id = ?").get(equipamentoId);
+  if (!equipamento) return res.status(404).json({ erro: "Equipamento não encontrado." });
+
+  const ultimo = db.prepare(`
+    SELECT valor, created_at
+    FROM lances
+    WHERE equipamento_id = ?
+    ORDER BY valor DESC, id DESC
+    LIMIT 1
+  `).get(equipamentoId);
+
+  const atual = ultimo ? Number(ultimo.valor) : Number(equipamento.lance_inicial || 0);
+  const incremento = Number(equipamento.incremento || 0);
+  const proximo = ultimo ? atual + incremento : atual;
+
+  res.json({
+    equipamento_id: equipamentoId,
+    lance_atual: atual,
+    proximo_lance: proximo,
+    total_lances: db.prepare("SELECT COUNT(*) AS total FROM lances WHERE equipamento_id = ?").get(equipamentoId).total
+  });
+});
+
+// Registra um lance real no banco, vinculado ao lote.
+app.post("/api/lances", (req, res) => {
+  const equipamentoId = Number(req.body.equipamento_id);
+  const nome = String(req.body.nome || "").trim();
+  const cpf = String(req.body.cpf || "").replace(/\D/g, "");
+  const telefone = String(req.body.telefone || "").replace(/\D/g, "");
+  const email = String(req.body.email || "").trim().toLowerCase();
+  const valor = Number(req.body.valor);
+
+  if (!Number.isInteger(equipamentoId) || equipamentoId <= 0) {
+    return res.status(400).json({ erro: "Lote inválido." });
+  }
+  if (nome.length < 3) return res.status(400).json({ erro: "Informe seu nome completo." });
+  if (!/^\d{11}$/.test(cpf)) return res.status(400).json({ erro: "CPF inválido. Informe os 11 dígitos." });
+  if (telefone.length < 10 || telefone.length > 13) return res.status(400).json({ erro: "Telefone inválido." });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ erro: "E-mail inválido." });
+  if (!Number.isFinite(valor) || valor <= 0) return res.status(400).json({ erro: "Valor do lance inválido." });
+
+  const equipamento = db.prepare(`
+    SELECT id, titulo, status, lance_inicial, incremento, data_abertura, data_encerramento
+    FROM equipamentos WHERE id = ?
+  `).get(equipamentoId);
+
+  if (!equipamento) return res.status(404).json({ erro: "Lote não encontrado." });
+  if (String(equipamento.status).toLowerCase() !== "publicado") {
+    return res.status(409).json({ erro: "Este lote não está disponível para lances." });
+  }
+
+  const agora = new Date();
+  if (equipamento.data_encerramento) {
+    const encerramento = new Date(String(equipamento.data_encerramento));
+    if (!Number.isNaN(encerramento.getTime()) && agora >= encerramento) {
+      return res.status(409).json({ erro: "O prazo para lances deste lote já foi encerrado." });
+    }
+  }
+
+  // Evita aceitar valor abaixo do lance inicial ou abaixo do incremento do último lance.
+  const ultimo = db.prepare(`
+    SELECT valor FROM lances
+    WHERE equipamento_id = ?
+    ORDER BY valor DESC, id DESC
+    LIMIT 1
+  `).get(equipamentoId);
+
+  const lanceAtual = ultimo ? Number(ultimo.valor) : Number(equipamento.lance_inicial || 0);
+  const incremento = Number(equipamento.incremento || 0);
+  const minimo = ultimo ? lanceAtual + incremento : lanceAtual;
+
+  if (valor < minimo) {
+    return res.status(409).json({
+      erro: `O lance mínimo para este lote é de R$ ${minimo.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`,
+      lance_minimo: minimo
+    });
+  }
+
+  // CPF não fica exposto nas respostas públicas: armazenamos somente um hash e os 4 últimos dígitos.
+  const cpfHash = crypto.createHash("sha256").update(cpf).digest("hex");
+  const cpfFinal4 = cpf.slice(-4);
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    // Revalida o maior lance dentro da transação para reduzir risco de dois lances simultâneos passarem juntos.
+    const ultimoTransacao = db.prepare(`
+      SELECT valor FROM lances
+      WHERE equipamento_id = ?
+      ORDER BY valor DESC, id DESC
+      LIMIT 1
+    `).get(equipamentoId);
+
+    const atualTransacao = ultimoTransacao ? Number(ultimoTransacao.valor) : Number(equipamento.lance_inicial || 0);
+    const minimoTransacao = ultimoTransacao ? atualTransacao + incremento : atualTransacao;
+
+    if (valor < minimoTransacao) {
+      db.exec("ROLLBACK");
+      return res.status(409).json({
+        erro: `Outro lance foi registrado. O novo lance mínimo é de R$ ${minimoTransacao.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`,
+        lance_minimo: minimoTransacao
+      });
+    }
+
+    const result = db.prepare(`
+      INSERT INTO lances (equipamento_id, nome, cpf_hash, cpf_final4, telefone, email, valor)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(equipamentoId, nome, cpfHash, cpfFinal4, telefone, email, valor);
+
+    db.exec("COMMIT");
+
+    res.status(201).json({
+      ok: true,
+      lance_id: Number(result.lastInsertRowid),
+      equipamento_id: equipamentoId,
+      titulo: equipamento.titulo,
+      valor,
+      mensagem: "Lance registrado com sucesso."
+    });
+  } catch (erro) {
+    try { db.exec("ROLLBACK"); } catch {}
+    console.error("Erro ao registrar lance:", erro);
+    res.status(500).json({ erro: "Não foi possível registrar o lance." });
+  }
 });
 
 app.delete("/api/equipamentos/:id", (req, res) => {
