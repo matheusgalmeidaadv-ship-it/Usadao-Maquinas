@@ -183,7 +183,7 @@ document.addEventListener("click",function(e){var btn=e.target.closest&&e.target
  const PLACEHOLDER='https://images.unsplash.com/photo-1581094794329-c8112a89af12?auto=format&fit=crop&w=900&q=80';
  const money=v=>Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
  const esc=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
- const dateTime=v=>{if(!v)return '—';const d=new Date(v);return isNaN(d)?v:d.toLocaleString('pt-BR',{dateStyle:'2-digit',timeStyle:'2-digit'})};
+ const dateTime=v=>{if(!v)return '—';const d=new Date(v);return isNaN(d)?v:d.toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'2-digit'})};
  let currentPhotos=[];
  let implementosById={};
  function getPhotos(x){try{const a=JSON.parse(x.fotos_json||'[]');if(Array.isArray(a)&&a.length)return a}catch{}return x.imagem?[x.imagem]:[]}
