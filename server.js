@@ -345,10 +345,10 @@ app.post("/api/lances", (req, res) => {
   }
 });
 
-// ==============================
-// FINANCIAMENTO — USADÃO MÁQUINAS
-// ==============================
-// O CNPJ é opcional. As solicitações ficam gravadas no banco persistente.
+
+// Solicitações de financiamento do formulário "Veja as parcelas desse veículo".
+// A data de nascimento aceita tanto AAAA-MM-DD (input type="date") quanto DD/MM/AAAA.
+// CNPJ é opcional.
 db.exec(`
   CREATE TABLE IF NOT EXISTS financiamentos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -374,14 +374,27 @@ function somenteDigitos(valor) {
 
 function validarDataNascimento(valor) {
   const s = String(valor || "").trim();
-  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(s)) return false;
-  const [dia, mes, ano] = s.split("/").map(Number);
+  let dia, mes, ano;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    [ano, mes, dia] = s.split("-").map(Number);
+  } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+    [dia, mes, ano] = s.split("/").map(Number);
+  } else {
+    return false;
+  }
+
   const data = new Date(ano, mes - 1, dia);
-  return data.getFullYear() === ano &&
-         data.getMonth() === mes - 1 &&
-         data.getDate() === dia &&
-         ano >= 1900 &&
-         ano <= new Date().getFullYear() - 18;
+  if (
+    data.getFullYear() !== ano ||
+    data.getMonth() !== mes - 1 ||
+    data.getDate() !== dia ||
+    ano < 1900
+  ) return false;
+
+  const hoje = new Date();
+  const maioridade = new Date(ano + 18, mes - 1, dia);
+  return maioridade <= hoje;
 }
 
 app.post("/api/financiamento", (req, res) => {
@@ -396,32 +409,62 @@ app.post("/api/financiamento", (req, res) => {
     const veiculoLote = String(req.body.veiculo_lote || "").trim();
     const autorizacao = Boolean(req.body.autorizacao);
 
-    if (nome.length < 3) return res.status(400).json({ erro: "Informe seu nome completo." });
-    if (!validarDataNascimento(dataNascimento)) return res.status(400).json({ erro: "Data de nascimento inválida. Use DD/MM/AAAA e idade mínima de 18 anos." });
-    if (!/^[^\s@]+@[^\s@]+\\.[^\s@]+$/.test(email)) return res.status(400).json({ erro: "E-mail inválido." });
-    if (!/^\d{11}$/.test(cpf)) return res.status(400).json({ erro: "CPF inválido. Informe os 11 dígitos." });
-    if (telefone.length < 10 || telefone.length > 13) return res.status(400).json({ erro: "Celular inválido." });
-    if (!/^[A-Z]{2}$/.test(estado)) return res.status(400).json({ erro: "Selecione um estado válido." });
-    if (cnpj && !/^\d{14}$/.test(cnpj)) return res.status(400).json({ erro: "CNPJ inválido. Informe os 14 dígitos ou deixe em branco." });
-    if (!veiculoLote) return res.status(400).json({ erro: "Selecione o veículo/lote de interesse." });
-    if (!autorizacao) return res.status(400).json({ erro: "É necessário autorizar o tratamento dos dados para solicitar a análise." });
+    if (nome.length < 3) {
+      return res.status(400).json({ erro: "Informe seu nome completo." });
+    }
+    if (!validarDataNascimento(dataNascimento)) {
+      return res.status(400).json({ erro: "Data de nascimento inválida. Use uma data válida e idade mínima de 18 anos." });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ erro: "E-mail inválido." });
+    }
+    if (!/^\d{11}$/.test(cpf)) {
+      return res.status(400).json({ erro: "CPF inválido. Informe os 11 dígitos." });
+    }
+    if (telefone.length < 10 || telefone.length > 13) {
+      return res.status(400).json({ erro: "Celular inválido." });
+    }
+    if (!/^[A-Z]{2}$/.test(estado)) {
+      return res.status(400).json({ erro: "Selecione um estado válido." });
+    }
+    if (cnpj && !/^\d{14}$/.test(cnpj)) {
+      return res.status(400).json({ erro: "CNPJ inválido. Informe os 14 dígitos ou deixe em branco." });
+    }
+    if (!veiculoLote) {
+      return res.status(400).json({ erro: "Selecione o veículo/lote de interesse." });
+    }
+    if (!autorizacao) {
+      return res.status(400).json({ erro: "É necessário autorizar o tratamento dos dados para solicitar a análise." });
+    }
 
     const agora = new Date().toISOString();
     const result = db.prepare(`
       INSERT INTO financiamentos
-      (nome,data_nascimento,email,cpf,telefone,estado,cnpj,veiculo_lote,autorizacao,autorizado_em)
-      VALUES (?,?,?,?,?,?,?,?,?,?)
-    `).run(nome, dataNascimento, email, cpf, telefone, estado, cnpj || null, veiculoLote, 1, agora);
+      (nome, data_nascimento, email, cpf, telefone, estado, cnpj, veiculo_lote, autorizacao, autorizado_em)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      nome,
+      dataNascimento,
+      email,
+      cpf,
+      telefone,
+      estado,
+      cnpj || null,
+      veiculoLote,
+      1,
+      agora
+    );
 
     console.log(`Nova solicitação de financiamento recebida: #${Number(result.lastInsertRowid)} — ${veiculoLote}`);
-    res.status(201).json({
+
+    return res.status(201).json({
       ok: true,
       financiamento_id: Number(result.lastInsertRowid),
       mensagem: "Solicitação recebida com sucesso. Nossa equipe entrará em contato."
     });
   } catch (erro) {
     console.error("Erro ao registrar financiamento:", erro);
-    res.status(500).json({ erro: "Não foi possível registrar sua solicitação agora. Tente novamente." });
+    return res.status(500).json({ erro: "Não foi possível registrar sua solicitação agora. Tente novamente." });
   }
 });
 
