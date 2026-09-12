@@ -399,14 +399,34 @@ function validarDataNascimento(valor) {
 
 app.post("/api/financiamento", (req, res) => {
   try {
+    // Compatibilidade com o formulário atual e com os nomes antigos da API.
     const nome = String(req.body.nome || "").trim();
-    const dataNascimento = String(req.body.data_nascimento || "").trim();
+    const dataNascimento = String(req.body.data_nascimento || req.body.nascimento || "").trim();
     const email = String(req.body.email || "").trim().toLowerCase();
     const cpf = somenteDigitos(req.body.cpf);
-    const telefone = somenteDigitos(req.body.telefone);
+    const telefone = somenteDigitos(req.body.telefone || req.body.celular);
     const estado = String(req.body.estado || "").trim().toUpperCase();
     const cnpj = somenteDigitos(req.body.cnpj);
-    const veiculoLote = String(req.body.veiculo_lote || "").trim();
+
+    let veiculoLote = String(req.body.veiculo_lote || "").trim();
+    if (!veiculoLote) {
+      const lote = String(req.body.numero_lote || "").trim();
+      const titulo = String(req.body.equipamento_titulo || "").trim();
+      veiculoLote = [lote ? `Lote ${lote}` : "", titulo].filter(Boolean).join(" — ");
+    }
+
+    // Se o formulário enviar somente o ID, buscamos lote e título no banco.
+    const equipamentoId = Number(req.body.equipamento_id || 0);
+    if (!veiculoLote && Number.isInteger(equipamentoId) && equipamentoId > 0) {
+      const equipamento = db.prepare("SELECT numero_lote, titulo FROM equipamentos WHERE id = ?").get(equipamentoId);
+      if (equipamento) {
+        veiculoLote = [
+          equipamento.numero_lote ? `Lote ${equipamento.numero_lote}` : "",
+          equipamento.titulo || ""
+        ].filter(Boolean).join(" — ");
+      }
+    }
+
     const autorizacao = Boolean(req.body.autorizacao);
 
     if (nome.length < 3) {
